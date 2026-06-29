@@ -67,3 +67,18 @@ def structure(report_text: str) -> dict:
     data.setdefault("legality_bin", "reframe")
     data.setdefault("severity", "medium")
     return data
+
+
+def detect_greeting_language(text: str) -> str:
+    """Cheap heuristic: returns a language code for the greeting reply.
+    Uses Unicode ranges so it costs zero API calls."""
+    if not text:
+        return "en"
+    for ch in text:
+        o = ord(ch)
+        if 0x0900 <= o <= 0x097F: return "hi"   # Devanagari (Hindi)
+        if 0x0980 <= o <= 0x09FF: return "bn"   # Bengali
+        if 0x0B80 <= o <= 0x0BFF: return "ta"   # Tamil
+        if 0x0C00 <= o <= 0x0C7F: return "te"   # Telugu
+        if 0x0C80 <= o <= 0x0CFF: return "kn"   # Kannada
+    return "en"

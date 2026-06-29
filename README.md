@@ -36,6 +36,11 @@ cp .env.example .env
 | `SUPABASE_URL` | Supabase → Project Settings → API → Project URL |
 | `SUPABASE_SERVICE_KEY` | Supabase → Project Settings → API → service_role key (NOT anon) |
 | `ADMIN_TELEGRAM_ID` | Message [@userinfobot](https://t.me/userinfobot) → copy your ID |
+| `R2_ENDPOINT` | Cloudflare R2 → Bucket → Settings → S3 API endpoint |
+| `R2_ACCESS_KEY` | Cloudflare R2 → Manage R2 API Tokens → Create → Access Key ID |
+| `R2_SECRET_KEY` | Cloudflare R2 → Manage R2 API Tokens → Create → Secret Access Key |
+| `R2_BUCKET` | `setu-media` (or your bucket name) |
+| `R2_PUBLIC_URL` | R2 bucket public URL (must end without trailing slash) |
 
 ### 3. Supabase database
 
@@ -104,7 +109,8 @@ You should see: `Setu bot running (polling)…`
 
 - **Python 3.11** + **python-telegram-bot v21** (async, polling)
 - **Groq API**: `whisper-large-v3` for speech-to-text, `llama-3.3-70b-versatile` for structuring
-- **Supabase**: PostgreSQL (problems table) + Storage (media bucket)
+- **Supabase**: PostgreSQL (problems table)
+- **Cloudflare R2**: Media storage (S3-compatible, 10 GB free)
 - **Railway**: Dockerized polling deployment (no webhooks)
 
 ## Rules
@@ -112,4 +118,13 @@ You should see: `Setu bot running (polling)…`
 - Nothing is auto-published. Admin approval is mandatory.
 - `reporter_telegram_id` is never returned in any public-facing query.
 - All AI model calls live in `ai.py` for easy provider swap.
+- Government routing is ASSISTED (citizen submits), never silent auto-submission.
 - One service, one repo, polling, no frontend.
+
+## Features
+
+- **Multilingual greetings**: Bot responds in Hindi, Bengali, Tamil, Telugu, or Kannada based on script detection (zero API cost)
+- **Main menu**: "Report a problem", "What is Setu?", "See the map" buttons
+- **Catch-all handler**: Any message outside the report flow gets a warm greeting + menu
+- **Cloudflare R2 storage**: Media stored in R2 (10 GB free), with Supabase Storage fallback
+- **Assisted government routing**: For statutory wounds, citizen gets a pre-filled complaint with one-tap link to the official channel

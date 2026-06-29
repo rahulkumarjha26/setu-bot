@@ -19,6 +19,35 @@ os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
 # Conversation states
 WAITING_MEDIA, WAITING_LOCATION, WAITING_CONSENT = range(3)
 
+GREETINGS = {
+  "en": "Namaste 🙏 I'm Setu. I help get problems near you *seen and solved* — a broken school toilet, dirty water, an unsafe road. Want to report one?",
+  "hi": "नमस्ते 🙏 मैं सेतु हूँ। मैं आपके आस-पास की समस्याओं को *सामने लाने और हल कराने* में मदद करता हूँ — टूटा शौचालय, गंदा पानी, असुरक्षित सड़क। क्या आप एक समस्या बताना चाहेंगे?",
+  "bn": "নমস্কার 🙏 আমি সেতু। আপনার আশেপাশের সমস্যা *তুলে ধরতে ও সমাধান করতে* সাহায্য করি। একটি সমস্যা জানাতে চান?",
+  "ta": "வணக்கம் 🙏 நான் சேது. உங்கள் பகுதியில் உள்ள பிரச்சினைகளை *வெளிக்கொணர்ந்து தீர்க்க* உதவுகிறேன். ஒன்றைப் பதிவு செய்ய விரும்புகிறீர்களா?",
+  "te": "నమస్తే 🙏 నేను సేతు. మీ చుట్టుపక్కల సమస్యలను *గుర్తించి పరిష్కరించడంలో* సహాయపడతాను. ఒకదాన్ని నివేదించాలా?",
+  "kn": "ನಮಸ್ಕಾರ 🙏 ನಾನು ಸೇತು. ನಿಮ್ಮ ಸುತ್ತಮುತ್ತಲ ಸಮಸ್ಯೆಗಳನ್ನು *ಗುರುತಿಸಿ ಪರಿಹರಿಸಲು* ಸಹಾಯ ಮಾಡುತ್ತೇನೆ. ಒಂದನ್ನು ವರದಿ ಮಾಡಬೇಕೆ?"
+}
+
+WHAT_IS_SETU = ("सेतु / Setu is a free bridge between the problems around you and the people who can fix them. "
+  "You speak a problem — in any language, by voice if you like — and we put it on a public map, "
+  "sort what companies can fund vs. what's the government's job, and help get it solved. "
+  "We never show your name. We take ₹0 from any help.")
+
+def main_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗣️ Report a problem", callback_data="menu_report")],
+        [InlineKeyboardButton("❓ What is Setu?", callback_data="menu_about")],
+        [InlineKeyboardButton("🗺️ See the map", url="https://setu-map.vercel.app")],
+    ])
+
+GOV_CHANNELS = {
+  "default": {
+    "name": "MCD 311 (Delhi)",
+    "url": "https://mcd311.example/complaint",
+    "note": "garbage, drains, streetlights, sewer overflow"
+  }
+}
+
 
 def make_handle() -> str:
     return f"Citizen#{random.randint(1000, 9999)}"
@@ -159,6 +188,9 @@ async def receive_consent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "consent_contact": True,
         "status": "pending_review",
     }
+    if s["legality_bin"] == "statutory":
+        record["gov_status"] = "routed"
+        record["gov_days"] = 0
     problem_id = db.insert_problem(record)
 
     await context.bot.send_message(
@@ -166,6 +198,13 @@ async def receive_consent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text="🙏 Thank you. Your report has been received and is being reviewed. "
              "We'll notify you here when it goes live. Your name is never shown publicly.",
     )
+
+    # Assisted gov routing for statutory wounds
+    if s["legality_bin"] == "statutory":
+        try:
+            await send_gov_routing(context, query.from_user.id, record)
+        except Exception as e:
+            logging.error(f"Gov routing message failed: {e}")
 
     # Notify admin with approve/reject buttons
     bin_emoji = {"fundable": "💚", "statutory": "🏛️", "reframe": "✂️"}.get(s["legality_bin"], "❓")
@@ -225,11 +264,58 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def greet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text or ""
+    lang = ai.detect_greeting_language(text)
+    await update.message.reply_text(
+        GREETINGS.get(lang, GREETINGS["en"]),
+        parse_mode="Markdown", reply_markup=main_menu()
+    )
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(WHAT_IS_SETU, reply_markup=main_menu())
+
+
+async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "menu_about":
+        await q.message.reply_text(WHAT_IS_SETU, reply_markup=main_menu())
+
+
+async def menu_start_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    await query.message.reply_text(
+        "Wonderful 🙏 Send me a *voice note*, *photo*, or *video* of the problem. Speak in any language.",
+        parse_mode="Markdown")
+    return WAITING_MEDIA
+
+
+async def send_gov_routing(context, chat_id, problem):
+    ch = GOV_CHANNELS["default"]
+    prefilled = (f"Civic complaint: {problem['title']}. {problem['description']} "
+                 f"Location: approx {problem['latitude']:.4f},{problem['longitude']:.4f}.")
+    btns = InlineKeyboardMarkup([[InlineKeyboardButton(f"📨 File with {ch['name']}", url=ch["url"])]])
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=("🏛️ This problem is the *government's legal duty* (e.g. "+ch["note"]+"), so companies cannot fund it. "
+              "But you can file it with the official channel in one tap — we've written it for you:\n\n"
+              f"`{prefilled}`\n\n"
+              "We'll keep it on the Setu map as *routed & tracked* so it's never invisible."),
+        parse_mode="Markdown", reply_markup=btns)
+
+
 def main():
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(menu_start_report, pattern="^menu_report$"),
+        ],
         states={
             WAITING_MEDIA: [MessageHandler(
                 filters.VOICE | filters.AUDIO | filters.VIDEO | filters.PHOTO, receive_media)],
@@ -240,6 +326,11 @@ def main():
     )
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(admin_decision, pattern="^(approve|reject)\\|"))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CallbackQueryHandler(menu_router, pattern="^menu_"))
+    # Catch-all greeting: only for text that isn't part of an active conversation.
+    # group=1 ensures the ConversationHandler (default group=0) takes precedence.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, greet), group=1)
     logging.info("Setu bot running (polling)…")
     app.run_polling()
 
