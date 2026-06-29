@@ -1,5 +1,9 @@
--- Public-facing view: deliberately OMITS reporter_telegram_id. Only published rows.
--- SECURITY INVOKER ensures RLS on the base table is respected.
+-- honest sub-states for statutory wounds
+alter table problems add column if not exists gov_authority text;   -- 'MCD' | 'DJB' | null
+alter table problems add column if not exists gov_filed text default 'awaiting_citizen';
+-- gov_filed ∈ 'awaiting_citizen' | 'filed_by_citizen' | 'acknowledged' | 'resolved'
+
+-- expose the new fields in the public view (drop + recreate due to column ordering)
 drop view if exists public_problems;
 create or replace view public_problems with (security_invoker=true) as
 select id, created_at, reporter_handle, media_type, media_url,
@@ -10,10 +14,7 @@ select id, created_at, reporter_handle, media_type, media_url,
 from problems
 where status = 'published';
 
--- Defense in depth: enable RLS on the base table.
-alter table problems enable row level security;
-
--- Grant column-level SELECT on safe columns only (reporter_telegram_id stays locked).
+-- Update column-level grant to include new fields
 revoke select on problems from anon;
 grant select (id, created_at, reporter_handle, media_type, media_url,
               title, description, category, legality_bin, severity,
@@ -21,11 +22,4 @@ grant select (id, created_at, reporter_handle, media_type, media_url,
               stage, gov_status, gov_days,
               gov_authority, gov_filed, is_sensitive) on problems to anon;
 
--- RLS policy lets anon see only published rows.
-drop policy if exists anon_select_published on problems;
-create policy anon_select_published on problems
-  for select to anon
-  using (status = 'published');
-
--- Expose ONLY the safe view to the public (anon) role.
 grant select on public_problems to anon;

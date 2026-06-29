@@ -49,3 +49,7 @@ def insert_problem(record: dict) -> str:
 
 def update_status(problem_id: str, status: str) -> None:
     supabase.table("problems").update({"status": status}).eq("id", problem_id).execute()
+
+
+def update_problem_field(problem_id: str, field: str, value) -> None:
+    supabase.table("problems").update({field: value}).eq("id", problem_id).execute()

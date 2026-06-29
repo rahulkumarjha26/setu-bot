@@ -1,6 +1,7 @@
 import os
 import random
 import logging
+import urllib.parse
 from telegram import (
     Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
     InlineKeyboardMarkup, InlineKeyboardButton
@@ -40,13 +41,41 @@ def main_menu():
         [InlineKeyboardButton("🗺️ See the map", url="https://setu-map.vercel.app")],
     ])
 
-GOV_CHANNELS = {
-  "default": {
-    "name": "MCD 311 (Delhi)",
-    "url": "https://mcd311.example/complaint",
-    "note": "garbage, drains, streetlights, sewer overflow"
+GOV = {
+  "MCD": {
+    "name": "MCD",
+    "wa": "918588887773",
+    "email": "mcd-ithelpdesk@mcd.nic.in",
+    "web": "https://mcd.everythingcivic.com/new_complain",
+    "covers": "garbage, drains, streetlights, roads, parks"
+  },
+  "DJB": {
+    "name": "Delhi Jal Board",
+    "wa": "919650291021",
+    "email": "grievances-djb@delhi.gov.in",
+    "web": "https://mcdonline.nic.in",
+    "covers": "sewer overflow, dirty water, no water supply"
   }
 }
+
+
+def choose_authority(category, description):
+    """Sewer/water → DJB; everything civic → MCD."""
+    text = (category + " " + (description or "")).lower()
+    if any(k in text for k in ["sewer","sewage","water","drain","pipe","tanker","supply","nala"]):
+        return "DJB"
+    return "MCD"
+
+
+def gov_links(authority, problem):
+    a = GOV[authority]
+    body = (f"Civic complaint via Setu. Issue: {problem['title']}. "
+            f"{problem['description']} "
+            f"Location (approx): {problem['latitude']:.4f},{problem['longitude']:.4f}.")
+    wa_url = f"https://wa.me/{a['wa']}?text=" + urllib.parse.quote(body)
+    subj = urllib.parse.quote("Civic Grievance via Setu")
+    mail_url = f"mailto:{a['email']}?subject={subj}&body=" + urllib.parse.quote(body)
+    return a, wa_url, mail_url
 
 
 def make_handle() -> str:
@@ -191,6 +220,8 @@ async def receive_consent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if s["legality_bin"] == "statutory":
         record["gov_status"] = "routed"
         record["gov_days"] = 0
+        record["gov_authority"] = choose_authority(s["category"], s["description"])
+        record["gov_filed"] = "awaiting_citizen"
     problem_id = db.insert_problem(record)
 
     await context.bot.send_message(
@@ -202,6 +233,7 @@ async def receive_consent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Assisted gov routing for statutory wounds
     if s["legality_bin"] == "statutory":
         try:
+            record["_id"] = problem_id
             await send_gov_routing(context, query.from_user.id, record)
         except Exception as e:
             logging.error(f"Gov routing message failed: {e}")
@@ -295,17 +327,39 @@ async def menu_start_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_gov_routing(context, chat_id, problem):
-    ch = GOV_CHANNELS["default"]
-    prefilled = (f"Civic complaint: {problem['title']}. {problem['description']} "
-                 f"Location: approx {problem['latitude']:.4f},{problem['longitude']:.4f}.")
-    btns = InlineKeyboardMarkup([[InlineKeyboardButton(f"📨 File with {ch['name']}", url=ch["url"])]])
+    auth = problem.get("gov_authority") or choose_authority(
+        problem.get("category",""), problem.get("description",""))
+    a, wa_url, mail_url = gov_links(auth, problem)
+    pid = problem.get("_id", "")
+    btns = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"📱 Send via WhatsApp ({a['name']})", url=wa_url)],
+        [InlineKeyboardButton(f"📧 Send via Email ({a['name']})", url=mail_url)],
+        [InlineKeyboardButton("✅ I've filed it", callback_data=f"filed|{pid}")],
+    ])
     await context.bot.send_message(
         chat_id=chat_id,
-        text=("🏛️ This problem is the *government's legal duty* (e.g. "+ch["note"]+"), so companies cannot fund it. "
-              "But you can file it with the official channel in one tap — we've written it for you:\n\n"
-              f"`{prefilled}`\n\n"
-              "We'll keep it on the Setu map as *routed & tracked* so it's never invisible."),
+        text=("🏛️ This problem is the *government's legal duty* (e.g. "+a['covers']+"), so companies cannot fund it. "
+              "But *you can file it* with a single tap — we've written it for you:\n\n"
+              f"*WhatsApp* (fastest): tap the button below — it opens WhatsApp with your complaint already typed.\n"
+              f"*Email* (backup): same complaint, same tap.\n\n"
+              "Once you've sent it, tap **✅ I've filed it** so the map shows it honestly as *filed & tracked*."),
         parse_mode="Markdown", reply_markup=btns)
+
+
+async def gov_filed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    action, problem_id = query.data.split("|", 1)
+    if action == "filed" and problem_id:
+        db.update_problem_field(problem_id, "gov_filed", "filed_by_citizen")
+        await query.edit_message_text(
+            query.message.text_markdown + "\n\n✅ *Marked as filed. Thank you.*",
+            parse_mode="Markdown", disable_web_page_preview=True)
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text="🙏 Thank you for filing it. Your complaint is now marked as *filed* on the public map. "
+                 "We'll keep tracking it and update you when the authority responds.",
+            parse_mode="Markdown")
 
 
 def main():
@@ -326,6 +380,7 @@ def main():
     )
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(admin_decision, pattern="^(approve|reject)\\|"))
+    app.add_handler(CallbackQueryHandler(gov_filed_callback, pattern="^filed\\|"))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CallbackQueryHandler(menu_router, pattern="^menu_"))
     # Catch-all greeting: only for text that isn't part of an active conversation.
